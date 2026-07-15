@@ -1,6 +1,6 @@
 # crumbtrail
 
-The setup wizard for [Crumbtrail](https://crumbtrail.dev). It finds your app, wires
+The setup wizard for [Crumbtrail](https://crumbtrail.ai). It finds your app, wires
 in the SDK, and confirms the first event actually arrives — so you don't have to
 read an integration guide to get started.
 
@@ -79,10 +79,10 @@ for the three-line manual setup.
 
 ## Links
 
-- **Website** — https://crumbtrail.dev
-- **Docs** — https://crumbtrail.dev/docs
-- **How it works** — https://crumbtrail.dev/how-it-works
-- **Pricing** — https://crumbtrail.dev/pricing
+- **Website** — https://crumbtrail.ai
+- **Docs** — https://crumbtrail.ai/docs
+- **How it works** — https://crumbtrail.ai/how-it-works
+- **Pricing** — https://crumbtrail.ai/pricing
 - **Source** — https://github.com/CrumbtrailDev/crumbtrail-cli
 - **Issues** — https://github.com/CrumbtrailDev/crumbtrail-cli/issues
 
