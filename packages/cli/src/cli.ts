@@ -46,7 +46,7 @@ import {
 import { discoverServices, type ServiceCandidate } from "./discover";
 import { otlpGuidePlan, renderOtlpGuide } from "./otlp-guide";
 import { RECIPE_REGISTRY } from "./recipe-registry";
-import { resolveEndpoint } from "./net";
+import { dashboardBase, resolveEndpoint } from "./net";
 import {
   color,
   consoleUi,
@@ -608,13 +608,16 @@ export async function runWizard(
     ? `Set ${plan.keyEnvVar} in your .env to your ingest key`
     : "Set your ingest key";
 
+  // User-facing links point at the app host (the SPA), not the API host.
+  const appBase = dashboardBase(base);
+
   let sessionUrl: string | undefined;
   if (parsed.skipVerify) {
     notes.push("Verification skipped (--skip-verify).");
   } else {
     ui.out(
       color.dim(
-        `${setKeyHint} — mint one at ${base}/settings, then start your app.`,
+        `${setKeyHint} — mint one at ${appBase}/settings, then start your app.`,
       ),
     );
     const poll = await pollWithSigint(
@@ -628,8 +631,8 @@ export async function runWizard(
       // The emotional payoff: deep-link straight to the captured session
       // (spec §4), and open it in the browser when one is available.
       sessionUrl = poll.sessionId
-        ? `${base}/sessions/${encodeURIComponent(poll.sessionId)}`
-        : `${base}/bugs`;
+        ? `${appBase}/sessions/${encodeURIComponent(poll.sessionId)}`
+        : `${appBase}/bugs`;
       ui.out(`${color.green("✓")} First real event received!`);
       ui.out(`  Watch it live: ${color.cyan(sessionUrl)}`);
       if (canUseBrowser(parsed.noBrowser, deps.env)) {
@@ -685,7 +688,7 @@ function printEvidenceSourcesPointer(ui: Ui, base: string): void {
     ),
   );
   ui.out(color.dim("queried at incident time and added to each bug's bundle."));
-  ui.out(`  Evidence sources: ${color.cyan(`${base}/settings`)}`);
+  ui.out(`  Evidence sources: ${color.cyan(`${dashboardBase(base)}/settings`)}`);
 }
 
 // ── Batch wizard (monorepo root) ─────────────────────────────────────────────
@@ -1024,10 +1027,12 @@ export async function runBatchWizard(
     // times is noise, not information.
     batchNotes.push("Verification skipped (--skip-verify).");
   } else if (reporting.length > 0) {
+    // User-facing links point at the app host (the SPA), not the API host.
+    const appBase = dashboardBase(base);
     for (const o of reporting) {
       if (o.keyEnvVar) {
         o.notes.push(
-          `Set ${o.keyEnvVar} in this service's .env (mint at ${base}/settings).`,
+          `Set ${o.keyEnvVar} in this service's .env (mint at ${appBase}/settings).`,
         );
       }
     }
@@ -1048,7 +1053,7 @@ export async function runBatchWizard(
         onFound: (serviceId, sessionId) => {
           const o = byServiceId.get(serviceId);
           if (!o) return;
-          o.sessionUrl = `${base}/sessions/${encodeURIComponent(sessionId)}`;
+          o.sessionUrl = `${appBase}/sessions/${encodeURIComponent(sessionId)}`;
           ui.out(`${color.green("✓")} ${o.name}: first event received.`);
         },
         fetchImpl: deps.fetchImpl,
@@ -1183,7 +1188,7 @@ function printBatchSummary(
   ];
   ui.out("");
   ui.out(`  ${parts.join(" · ")}`);
-  ui.out(`  Dashboard: ${color.cyan(`${base}/bugs`)}`);
+  ui.out(`  Dashboard: ${color.cyan(`${dashboardBase(base)}/bugs`)}`);
 
   const notes = [
     ...outcomes.flatMap((o) => o.notes.map((n) => `${o.name}: ${n}`)),
@@ -1360,6 +1365,8 @@ function printSummary(
   keyEnvVar?: string,
   sessionUrl?: string,
 ): void {
+  // User-facing links point at the app host (the SPA), not the API host.
+  const appBase = dashboardBase(base);
   ui.out("");
   ui.out(color.bold("Setup complete"));
   ui.out(`  Project:   ${p.projectName}`);
@@ -1368,7 +1375,7 @@ function printSummary(
     // Hands-off: the installer wrote no key. Tell the user the var to set and
     // where to mint the value.
     ui.out(
-      `  Ingest key: set ${color.bold(keyEnvVar)} in .env ${color.dim(`(mint at ${base}/settings)`)}`,
+      `  Ingest key: set ${color.bold(keyEnvVar)} in .env ${color.dim(`(mint at ${appBase}/settings)`)}`,
     );
   }
   if (filesTouched.length > 0) {
@@ -1377,7 +1384,7 @@ function printSummary(
   if (sessionUrl) {
     ui.out(`  Session:   ${color.cyan(sessionUrl)}`);
   }
-  ui.out(`  Dashboard: ${color.cyan(`${base}/bugs`)}`);
+  ui.out(`  Dashboard: ${color.cyan(`${appBase}/bugs`)}`);
   if (notes.length > 0) {
     ui.out("");
     for (const n of notes) ui.out(color.dim(`  note: ${n}`));
