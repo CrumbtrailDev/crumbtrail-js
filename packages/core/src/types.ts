@@ -338,17 +338,17 @@ export interface CrumbtrailConfig {
   // Interaction
   maskInputTypes: string[];
   /**
-   * Mask DOM derived text before it enters the browser ring buffer. A false
-   * value is a local developer choice and is never available through remote
-   * capture policy.
+   * Always masks DOM derived text before it enters the browser ring buffer.
+   * Use data-crumbtrail-unmask only on an individual element that is safe to
+   * capture.
    */
-  maskAllText: boolean;
+  maskAllText: true;
   /**
-   * Mask input and keystroke values before they enter the browser ring buffer.
-   * A false value is a local developer choice and is never available through
-   * remote capture policy.
+   * Always masks input and keystroke values before they enter the browser ring
+   * buffer. Use data-crumbtrail-unmask only on an individual element that is
+   * safe to capture.
    */
-  maskAllInputs: boolean;
+  maskAllInputs: true;
   ignoreSelectors: string[];
   describeInteractionElement?: InteractionElementDescriptorFactory;
 

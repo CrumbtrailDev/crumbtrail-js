@@ -77,9 +77,8 @@ database row values are masked before they enter the local ring buffer. Add
 capture. Add `data-crumbtrail-block` to exclude an element and its descendants
 entirely.
 
-Remote capture policy can only add masking. It cannot globally unmask text or
-inputs. Setting `maskAllText` or `maskAllInputs` to `false` is a local build
-time developer choice and is not exposed through remote config.
+Remote capture policy can only add masking. Clear text or values are captured
+only when `data-crumbtrail-unmask` is added to that individual safe element.
 
 For consent managed applications, begin capture only after your consent manager
 grants permission:

@@ -229,7 +229,12 @@ export class Crumbtrail {
       typeof presetOrConfig === "string"
         ? PRESETS[presetOrConfig]
         : presetOrConfig;
-    const config = { ...DEFAULT_CONFIG, ...overrides };
+    const config: CrumbtrailConfig = {
+      ...DEFAULT_CONFIG,
+      ...overrides,
+      maskAllText: true,
+      maskAllInputs: true,
+    };
 
     // Non-browser guard (SSR, `next build`). init() is documented as a
     // module-scope call, so it runs during server render/build where `window`
@@ -432,6 +437,7 @@ export class Crumbtrail {
 
   private async finalizeFlagBug(
     options?: FlagBugOptions,
+    finalizerOriginated = false,
   ): Promise<{ bugId: string }> {
     const bugId = this.createBugId();
     const windowMs = options?.windowMs ?? this.config.ringBufferMs;
@@ -460,11 +466,14 @@ export class Crumbtrail {
         };
         if (!this.config.captureRawState)
           attachRedactionMetadata(d, state.metadata);
-        this.bus.emit({
-          t: flaggedAt,
-          k: "state.snap",
-          d,
-        });
+        this.bus.emit(
+          {
+            t: flaggedAt,
+            k: "state.snap",
+            d,
+          },
+          { bypassAdmission: finalizerOriginated },
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const redactedMsg = this.config.captureRawState
@@ -482,11 +491,14 @@ export class Crumbtrail {
         };
         if (!this.config.captureRawState)
           attachRedactionMetadata(d, redactedMsg.metadata);
-        this.bus.emit({
-          t: flaggedAt,
-          k: "state.err",
-          d,
-        });
+        this.bus.emit(
+          {
+            t: flaggedAt,
+            k: "state.err",
+            d,
+          },
+          { bypassAdmission: finalizerOriginated },
+        );
       }
     }
 
@@ -513,18 +525,24 @@ export class Crumbtrail {
         };
         if (!this.config.captureRawState)
           attachRedactionMetadata(d, redacted.metadata);
-        this.bus.emit({ t: flaggedAt, k: "dom.snap", d });
+        this.bus.emit(
+          { t: flaggedAt, k: "dom.snap", d },
+          { bypassAdmission: finalizerOriginated },
+        );
       } catch {
         // DOM serialization must never block the report.
       }
     }
 
     // Emit marker into the live stream and include it in snapshot.
-    this.bus.emit({
-      t: flaggedAt,
-      k: "bug.flag",
-      d: { bugId, note },
-    });
+    this.bus.emit(
+      {
+        t: flaggedAt,
+        k: "bug.flag",
+        d: { bugId, note },
+      },
+      { bypassAdmission: finalizerOriginated },
+    );
 
     // Flush pending events into ring buffer before snapshot
     this.bus.flush();
@@ -811,7 +829,7 @@ export class Crumbtrail {
     options?: FlagBugOptions,
   ): Promise<{ bugId: string }> {
     this.flightRecorderState = "finalizing";
-    return this.finalizeFlagBug(options);
+    return this.finalizeFlagBug(options, true);
   }
 
   private trackFlightRecorderFinalization(
@@ -1211,6 +1229,7 @@ function applyRemoteMaskingMode(
     switch (mode.toLowerCase()) {
       case "all":
       case "full":
+      case "mask_all":
       case "strict":
       case "masked":
         config.maskAllText = true;
@@ -1227,8 +1246,7 @@ function applyRemoteMaskingMode(
       case "none":
       case "off":
       case "unmasked":
-        // Remote policy may tighten masking only. Local opt out is a build time
-        // developer choice and is never available through remote config.
+        // Remote policy may tighten masking only.
         break;
     }
   }
@@ -1461,6 +1479,7 @@ function hasRecognizedRemoteMasking(settings: Record<string, unknown>): boolean 
       [
         "all",
         "full",
+        "mask_all",
         "strict",
         "masked",
         "text",

@@ -273,7 +273,7 @@ describe("production capture v3", () => {
         captureConfig: {
           killSwitch: false,
           consentMode: "required",
-          masking: { mode: "all" },
+          maskingMode: "mask_all",
           triggers: {
             tailSeconds: 17,
             uncaughtError: true,
@@ -427,12 +427,10 @@ describe("production capture v3", () => {
     await logger.stop();
   });
 
-  it("never lets a remote policy globally unmask local capture", async () => {
+  it("allows remote policy to tighten masking without globally unmasking", async () => {
     const transport = makeTransport();
     const logger = Crumbtrail.init({
       transportInstance: transport,
-      maskAllText: false,
-      maskAllInputs: false,
       environment: false,
       domSnapshot: false,
     });
@@ -445,8 +443,8 @@ describe("production capture v3", () => {
       },
     });
     expect((logger as any).config).toMatchObject({
-      maskAllText: false,
-      maskAllInputs: false,
+      maskAllText: true,
+      maskAllInputs: true,
     });
 
     (logger as any).applyRemoteConfig({
@@ -537,10 +535,10 @@ describe("production capture v3", () => {
       flightRecorder: true,
       flightRecorderTailMs: 10,
       environment: false,
-      domSnapshot: false,
       flushIntervalMs: 100_000,
       flushBufferSize: 1_000,
     });
+    logger.registerStateProvider("checkout", () => ({ step: 2 }));
 
     logger.addEvent({ type: "before-tail", data: { safe: true } });
     const report = logger.flag();
@@ -560,7 +558,18 @@ describe("production capture v3", () => {
     );
     const reportEvents = (transport.sendBugReport as any).mock.calls[0][1];
     expect(reportEvents).toEqual(
-      expect.arrayContaining([expect.objectContaining({ k: "before-tail" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ k: "before-tail" }),
+        expect.objectContaining({
+          k: "state.snap",
+          d: expect.objectContaining({ name: "checkout" }),
+        }),
+        expect.objectContaining({ k: "dom.snap" }),
+        expect.objectContaining({ k: "bug.flag" }),
+      ]),
+    );
+    expect(reportEvents).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ k: "after-tail" })]),
     );
     const stopped = logger.stop();
     await expect(stopped).resolves.toMatchObject({ sessionId: expect.any(String) });

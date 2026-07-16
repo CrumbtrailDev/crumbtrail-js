@@ -9,8 +9,8 @@ export class EventBus {
   private flushBufferSize = 100;
   private admissionPredicate: (event: BugEvent) => boolean = () => true;
 
-  emit(event: BugEvent): void {
-    if (!this.admissionPredicate(event)) return;
+  emit(event: BugEvent, options?: { bypassAdmission?: boolean }): void {
+    if (!options?.bypassAdmission && !this.admissionPredicate(event)) return;
     for (const tap of this.taps) {
       try {
         tap(event);
