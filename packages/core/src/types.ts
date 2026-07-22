@@ -138,6 +138,13 @@ export const DB_READ_BULK_EVENT_KIND = "db.read.bulk" as const;
 export const CAPTURE_GAP_EVENT_KIND = "capture_gap" as const;
 
 /**
+ * Canonical event kind for a labeled on-screen numeric snapshot (`k:'ui.num'`).
+ * Payload: `{ region, items: [{ label, value, unit? }] }` — labels and parsed
+ * numbers only, never raw DOM/HTML.
+ */
+export const UI_NUM_EVENT_KIND = "ui.num" as const;
+
+/**
  * Type specific payload (`d`) of a `k:'capture_gap'` event. `detail` is deliberately a bounded,
  * redacted diagnostic descriptor such as an error name, table and operation, or leading SQL
  * keyword. It must never contain raw SQL values or other user data.
@@ -420,6 +427,9 @@ export interface CrumbtrailConfig {
   // Heartbeat
   heartbeat: boolean;
 
+  // Labeled on-screen numeric snapshots (`k:'ui.num'`)
+  uiNumbers: boolean;
+
   // Environment snapshot
   environment: boolean;
 
@@ -565,6 +575,8 @@ export const DEFAULT_CONFIG: CrumbtrailConfig = {
 
   heartbeat: true,
 
+  uiNumbers: true,
+
   environment: true,
 
   widget: false,
@@ -629,6 +641,8 @@ export const PRESET_LIGHT: Partial<CrumbtrailConfig> = {
   cookies: false,
   storage: false,
   performance: false,
+  // Full-DOM numeric scans are against LIGHT's minimal-overhead posture.
+  uiNumbers: false,
 };
 
 // Embedded end-user monitoring: no widget, but silently auto-capture the reproduction window
