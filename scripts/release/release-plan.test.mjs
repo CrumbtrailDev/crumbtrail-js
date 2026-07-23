@@ -6,10 +6,10 @@ import {
   createReleasePlan,
   changedFilesSince,
   discoverPackages,
-  packageExistsOnNpm,
-  preflightAndPublish,
-  preflightNpmVersions,
+  preflightAndPublishArtifacts,
+  resolveReleaseArtifactsDir,
   selectReleasePackages,
+  topologicallyOrderReleasePackages,
   validateBaseRef,
 } from "./release-plan.mjs";
 
@@ -158,7 +158,7 @@ describe("release package selection", () => {
     ]);
   });
 
-  it("derives the complete Phase 0 release set and exercises collision preflight", async () => {
+  it("derives the complete Phase 0 release set", async () => {
     // c7dacf4 is the last commit immediately before PR #17. Keep this test
     // tied to the real release range so the workflow cannot silently grow the
     // Phase 0 publish set as workspace metadata changes.
@@ -188,14 +188,6 @@ describe("release package selection", () => {
       { name: "crumbtrail-react-native", version: "0.3.0", relativeDir: "packages/react-native" },
       { name: "crumbtrail-tauri", version: "0.3.0", relativeDir: "packages/tauri" },
     ]);
-    await expect(preflightNpmVersions(plan.packages, {
-      exec: async () => {
-        const error = new Error("not found");
-        error.code = 1;
-        error.stderr = "npm error code E404\\nnpm error 404 Not Found";
-        throw error;
-      },
-    })).resolves.toBeUndefined();
   });
 
   it("rejects option-like and invalid base refs before Git receives them", () => {
@@ -204,39 +196,109 @@ describe("release package selection", () => {
   });
 });
 
-describe("npm collision preflight", () => {
-  it("accepts a mocked npm not-found response as an available version", async () => {
-    const exists = await packageExistsOnNpm("crumbtrail-core", "99.0.0", {
-      exec: async () => {
-        const error = new Error("not found");
-        error.code = 1;
-        error.stderr = "npm error code E404\nnpm error 404 Not Found";
-        throw error;
+describe("release artifact safety", () => {
+  const artifact = (name, integrity) => ({ name, version: "1.0.0", integrity, tarballPath: `/tmp/${name}.tgz` });
+
+  it("confines recursive artifact cleanup to the dedicated repository descendant", () => {
+    const rootDir = path.join(path.sep, "workspace", "crumbtrail-cli");
+    expect(resolveReleaseArtifactsDir(rootDir, ".release-artifacts")).toBe(path.join(rootDir, ".release-artifacts"));
+    expect(resolveReleaseArtifactsDir(rootDir, path.join(rootDir, ".release-artifacts")))
+      .toBe(path.join(rootDir, ".release-artifacts"));
+    expect(() => resolveReleaseArtifactsDir(rootDir, ".")).toThrow("dedicated .release-artifacts");
+    expect(() => resolveReleaseArtifactsDir(rootDir, "..")).toThrow("dedicated .release-artifacts");
+    expect(() => resolveReleaseArtifactsDir(rootDir, ".release-artifacts/../.release-artifacts"))
+      .toThrow("dedicated .release-artifacts");
+    expect(() => resolveReleaseArtifactsDir(rootDir, ".release-artifacts/nested")).toThrow("must use");
+    expect(() => resolveReleaseArtifactsDir(rootDir, path.join(path.sep, "workspace", "crumbtrail-cli-evil", ".release-artifacts")))
+      .toThrow("must use");
+    expect(() => resolveReleaseArtifactsDir(rootDir, ".release-artifacts-evil")).toThrow("must use");
+  });
+
+  it("skips a prior publication only when its registry integrity exactly matches the packed tarball", async () => {
+    const published = [];
+    const result = await preflightAndPublishArtifacts([artifact("crumbtrail-core", "sha512-same")], {
+      lookupIntegrity: async () => "sha512-same",
+      publish: async (entry) => published.push(entry.name),
+    });
+    expect(published).toEqual([]);
+    expect(result.skipped.map((entry) => entry.name)).toEqual(["crumbtrail-core"]);
+    expect(result.published).toEqual([]);
+  });
+
+  it("aborts the whole batch before publishing when any existing tarball differs", async () => {
+    const published = [];
+    const lookedUp = [];
+    await expect(preflightAndPublishArtifacts([
+      artifact("crumbtrail-core", "sha512-local-core"),
+      artifact("crumbtrail-node", "sha512-local-node"),
+    ], {
+      lookupIntegrity: async (name) => {
+        lookedUp.push(name);
+        return name === "crumbtrail-node" ? "sha512-other-node" : null;
+      },
+      publish: async (entry) => published.push(entry.name),
+    })).rejects.toThrow("crumbtrail-node@1.0.0");
+    expect(lookedUp).toEqual(["crumbtrail-core", "crumbtrail-node"]);
+    expect(published).toEqual([]);
+  });
+
+  it("resumes after a mid-batch failure by skipping the exact artifact already published", async () => {
+    const artifacts = [
+      artifact("crumbtrail-core", "sha512-core"),
+      artifact("crumbtrail-node", "sha512-node"),
+      artifact("crumbtrail", "sha512-cli"),
+    ];
+    const registry = new Map();
+    const firstAttemptPublished = [];
+    await expect(preflightAndPublishArtifacts(artifacts, {
+      lookupIntegrity: async (name) => registry.get(name) ?? null,
+      publish: async (entry) => {
+        firstAttemptPublished.push(entry.name);
+        if (entry.name === "crumbtrail-node") throw new Error("transient npm failure");
+        registry.set(entry.name, entry.integrity);
+      },
+    })).rejects.toThrow("transient npm failure");
+    expect(firstAttemptPublished).toEqual(["crumbtrail-core", "crumbtrail-node"]);
+    expect(registry).toEqual(new Map([["crumbtrail-core", "sha512-core"]]));
+
+    const rerunPublished = [];
+    const rerun = await preflightAndPublishArtifacts(artifacts, {
+      lookupIntegrity: async (name) => registry.get(name) ?? null,
+      publish: async (entry) => {
+        rerunPublished.push(entry.name);
+        registry.set(entry.name, entry.integrity);
       },
     });
-    expect(exists).toBe(false);
+    expect(rerun.skipped.map((entry) => entry.name)).toEqual(["crumbtrail-core"]);
+    expect(rerunPublished).toEqual(["crumbtrail-node", "crumbtrail"]);
+    expect(registry).toEqual(new Map([
+      ["crumbtrail-core", "sha512-core"],
+      ["crumbtrail-node", "sha512-node"],
+      ["crumbtrail", "sha512-cli"],
+    ]));
   });
 
-  it("recognizes an existing selected version as a collision", async () => {
-    const exists = await packageExistsOnNpm("crumbtrail-core", "1.0.0", { exec: async () => ({ stdout: '"1.0.0"' }) });
-    expect(exists).toBe(true);
-  });
-
-  it("fails the release before publish when any selected version exists", async () => {
-    await expect(preflightNpmVersions([{ name: "crumbtrail-core", version: "1.0.0" }], {
-      exec: async () => ({ stdout: '"1.0.0"' }),
-    })).rejects.toThrow("crumbtrail-core@1.0.0");
-  });
-
-  it("runs collision preflight before the first publish", async () => {
-    const calls = [];
-    await expect(preflightAndPublish([{ name: "crumbtrail-core", version: "1.0.0" }], {
-      preflight: async () => {
-        calls.push("preflight");
-        throw new Error("collision");
-      },
-      publish: async () => calls.push("publish"),
-    })).rejects.toThrow("collision");
-    expect(calls).toEqual(["preflight"]);
+  it("publishes selected artifacts in dependency-safe topological order", () => {
+    const packages = [
+      { name: "crumbtrail", version: "1.0.0" },
+      { name: "crumbtrail-core", version: "1.0.0" },
+      { name: "crumbtrail-detect-core", version: "1.0.0" },
+      { name: "crumbtrail-install-shared", version: "1.0.0" },
+      { name: "crumbtrail-node", version: "1.0.0" },
+    ];
+    const ordered = topologicallyOrderReleasePackages(packages, new Map([
+      ["crumbtrail", ["crumbtrail-detect-core"]],
+      ["crumbtrail-detect-core", ["crumbtrail-install-shared"]],
+      ["crumbtrail-install-shared", []],
+      ["crumbtrail-node", ["crumbtrail-core"]],
+      ["crumbtrail-core", []],
+    ]));
+    expect(ordered.map((entry) => entry.name)).toEqual([
+      "crumbtrail-core",
+      "crumbtrail-install-shared",
+      "crumbtrail-detect-core",
+      "crumbtrail",
+      "crumbtrail-node",
+    ]);
   });
 });

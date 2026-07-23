@@ -1,7 +1,8 @@
 name: release
 
-# Publishes only public packages whose packed output changed since the supplied
-# base ref. A selected name@version already on npm is a hard failure.
+# Publishes public packages selected from changed package paths plus workspace
+# dependency propagation since the supplied base ref. The release runner packs
+# the entire set first, then skips only registry artifacts with matching SRI.
 on:
   workflow_dispatch:
     inputs:

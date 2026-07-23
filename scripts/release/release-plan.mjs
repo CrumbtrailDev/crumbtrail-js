@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +40,12 @@ function declaredDependencies(pkg) {
     ...runtimeContractDependencies(pkg),
     ...(pkg.devDependencies ?? {}),
   };
+}
+
+export function declaredWorkspaceDependencies(manifest) {
+  return Object.entries(declaredDependencies(manifest))
+    .filter(([, version]) => isWorkspaceSpec(version))
+    .map(([name]) => name);
 }
 
 function bundledWorkspaceDependencies(pkg) {
@@ -147,6 +154,32 @@ export function validateBaseRef(baseRef) {
   return baseRef;
 }
 
+/**
+ * Release artifacts are deliberately confined to one dedicated repository
+ * directory. This guard must run before any recursive cleanup.
+ */
+export function resolveReleaseArtifactsDir(rootDir, requestedPath = ".release-artifacts") {
+  if (
+    typeof requestedPath !== "string" ||
+    requestedPath.length === 0 ||
+    requestedPath === "." ||
+    requestedPath === ".." ||
+    requestedPath.split(/[\\/]/).includes("..")
+  ) {
+    throw new Error("Release artifacts must use the dedicated .release-artifacts directory.");
+  }
+
+  const resolvedRoot = path.resolve(rootDir);
+  const resolvedArtifactsDir = path.resolve(resolvedRoot, requestedPath);
+  const dedicatedArtifactsDir = path.join(resolvedRoot, ".release-artifacts");
+  if (resolvedArtifactsDir !== dedicatedArtifactsDir) {
+    throw new Error(
+      `Release artifacts must use ${dedicatedArtifactsDir}; received ${JSON.stringify(requestedPath)}.`,
+    );
+  }
+  return resolvedArtifactsDir;
+}
+
 export async function changedFilesSince(rootDir, baseRef) {
   const safeBaseRef = validateBaseRef(baseRef);
   await execFile("git", ["rev-parse", "--verify", "--end-of-options", `${safeBaseRef}^{commit}`], { cwd: rootDir });
@@ -199,36 +232,103 @@ export async function createReleasePlan({ rootDir, baseRef, changedFiles } = {})
   };
 }
 
-export async function packageExistsOnNpm(name, version, { exec = execFile } = {}) {
-  try {
-    await exec("npm", ["view", `${name}@${version}`, "version", "--json"], { maxBuffer: 1024 * 1024 });
-    return true;
-  } catch (error) {
-    // npm returns exit code 1 for a version that does not exist. Connection and
-    // registry failures must fail closed, otherwise a release could collide.
-    if (error.code === 1 && /E404|404|not found/i.test(`${error.stdout ?? ""}\n${error.stderr ?? ""}`)) return false;
-    throw new Error(`Could not verify npm availability for ${name}@${version}: ${error.stderr ?? error.message}`, { cause: error });
-  }
-}
-
-export async function preflightNpmVersions(packages, options = {}) {
-  const collisions = [];
-  for (const pkg of packages) {
-    if (await packageExistsOnNpm(pkg.name, pkg.version, options)) collisions.push(`${pkg.name}@${pkg.version}`);
-  }
-  if (collisions.length > 0) {
-    throw new Error(`Selected package versions already exist on npm: ${collisions.join(", ")}. Bump them before releasing.`);
-  }
+function isNpmNotFound(error) {
+  return error?.code === 1 && /E404|404|not found/i.test(`${error.stdout ?? ""}\n${error.stderr ?? ""}`);
 }
 
 /**
- * Keep the collision gate adjacent to the only operation that can publish.
- * The injected publisher keeps this ordering testable without touching npm.
+ * Returns the registry integrity for an immutable name@version, or null when
+ * it has not been published. Registry and malformed-response failures fail
+ * closed so a rerun cannot silently overwrite an unknown artifact.
  */
-export async function preflightAndPublish(packages, { preflight = preflightNpmVersions, publish } = {}) {
+export async function npmPackageIntegrity(name, version, { exec = execFile } = {}) {
+  try {
+    const { stdout } = await exec("npm", ["view", `${name}@${version}`, "dist.integrity", "--json"], { maxBuffer: 1024 * 1024 });
+    const integrity = JSON.parse(stdout);
+    if (typeof integrity !== "string" || integrity.length === 0) {
+      throw new Error(`npm returned no dist.integrity for existing ${name}@${version}.`);
+    }
+    return integrity;
+  } catch (error) {
+    // npm returns exit code 1 for a version that does not exist. Connection and
+    // registry failures must fail closed, otherwise a release could collide.
+    if (isNpmNotFound(error)) return null;
+    if (error.message?.startsWith("npm returned no dist.integrity")) throw error;
+    throw new Error(`Could not verify npm integrity for ${name}@${version}: ${error.stderr ?? error.message}`, { cause: error });
+  }
+}
+
+export async function tarballIntegrity(tarballPath) {
+  const archive = await fs.readFile(tarballPath);
+  return `sha512-${createHash("sha512").update(archive).digest("base64")}`;
+}
+
+/**
+ * Packs must complete before this function is called. It inspects every
+ * immutable name@version before publishing any new tarball, allowing a failed
+ * batch to resume only when the already-published artifact exactly matches the
+ * local tarball that this run packed.
+ */
+export async function preflightAndPublishArtifacts(artifacts, { lookupIntegrity = npmPackageIntegrity, publish } = {}) {
   if (typeof publish !== "function") throw new Error("A package publisher is required.");
-  await preflight(packages);
-  for (const pkg of packages) await publish(pkg);
+  const checked = [];
+  for (const artifact of artifacts) {
+    if (typeof artifact.integrity !== "string" || artifact.integrity.length === 0) {
+      throw new Error(`A local tarball integrity is required for ${artifact.name}@${artifact.version}.`);
+    }
+    checked.push({ artifact, publishedIntegrity: await lookupIntegrity(artifact.name, artifact.version) });
+  }
+
+  const mismatches = checked
+    .filter(({ artifact, publishedIntegrity }) => publishedIntegrity !== null && publishedIntegrity !== artifact.integrity)
+    .map(({ artifact, publishedIntegrity }) => `${artifact.name}@${artifact.version} (npm ${publishedIntegrity}, local ${artifact.integrity})`);
+  if (mismatches.length > 0) {
+    throw new Error(`Published package integrity does not match the packed release artifact: ${mismatches.join(", ")}. No packages were published.`);
+  }
+
+  const skipped = checked
+    .filter(({ publishedIntegrity }) => publishedIntegrity !== null)
+    .map(({ artifact }) => artifact);
+  const toPublish = checked
+    .filter(({ publishedIntegrity }) => publishedIntegrity === null)
+    .map(({ artifact }) => artifact);
+  for (const artifact of toPublish) await publish(artifact);
+  return { published: toPublish, skipped };
+}
+
+export function topologicallyOrderReleasePackages(packages, dependenciesByName) {
+  const byName = new Map(packages.map((pkg) => [pkg.name, pkg]));
+  const dependencyCount = new Map();
+  const dependents = new Map([...byName.keys()].map((name) => [name, []]));
+  const ordered = [];
+  const dependenciesFor = (name) => {
+    const dependencies = dependenciesByName instanceof Map ? dependenciesByName.get(name) : dependenciesByName?.[name];
+    return [...(dependencies ?? [])].filter((dependency) => byName.has(dependency)).sort();
+  };
+
+  for (const name of byName.keys()) {
+    const dependencies = dependenciesFor(name);
+    dependencyCount.set(name, dependencies.length);
+    for (const dependency of dependencies) dependents.get(dependency).push(name);
+  }
+  const ready = [...byName.keys()].filter((name) => dependencyCount.get(name) === 0).sort();
+  while (ready.length > 0) {
+    const name = ready.shift();
+    ordered.push(byName.get(name));
+    for (const dependent of dependents.get(name).sort()) {
+      const nextCount = dependencyCount.get(dependent) - 1;
+      dependencyCount.set(dependent, nextCount);
+      if (nextCount === 0) {
+        ready.push(dependent);
+        ready.sort();
+      }
+    }
+  }
+  if (ordered.length !== packages.length) {
+    const cycleMembers = [...byName.keys()].filter((name) => dependencyCount.get(name) > 0).sort();
+    throw new Error(`Release package dependency cycle detected: ${cycleMembers.join(", ")}.`);
+  }
+  return ordered;
 }
 
 export async function writePlan(plan, outputPath) {
